@@ -32,7 +32,7 @@ struct ParametersT {
 };
 
 // Default values
-const ParametersT kParameters = {.counter_max = 1000, .delay_us = 1000};
+const ParametersT kParameters = {.counter_max = 1000, .delay_us = 20000};
 
 //-----------------------------------------------------------------------------------------------------
 // Demo global measurement values
