@@ -494,6 +494,8 @@ bool XcpIsActivated(void);
 
 /// Check if XCP is connected
 bool XcpIsConnected(void);
+/// Check if XCP is connected
+bool XcpIsDaqRunning(void);
 
 // Project name
 const char *XcpGetProjectName(void);

@@ -13,6 +13,13 @@
 #include "lookup.hpp"  // for lookup_table::LookupTableT
 #include "sig_gen.hpp" // for signal_generator::SignalGenerator
 
+// NIRA added headers
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <getopt.h>
+#include <fstream>
+
 //-----------------------------------------------------------------------------------------------------
 // XCP parameters
 #define OPTION_PROJECT_NAME "cpp_demo"  // A2L project name
@@ -39,6 +46,20 @@ const ParametersT kParameters = {.counter_max = 1000, .delay_us = 20000};
 
 uint8_t temperature = 50; // In Celsius
 double speed = 0.0f;      // Speed in km/h
+
+// NIRA VARIABLES
+static int8_t AxleHeightRear = 100;
+static uint8_t SuspensionOperationMode = 2;
+static int16_t LatAcc = 100;
+static int16_t LonAcc = -100;
+static uint16_t Velocity = 10000;
+static uint32_t Odometer = 1000;
+static uint64_t GpsTime = 1234567;
+static double AmbientTemperature = 20.0;
+static float EngineTorque = 1250.0;
+static bool BrakingInProgress = true;
+
+static uint32_t datalog[100];
 
 //-----------------------------------------------------------------------------------------------------
 // Demo signal generator class
@@ -84,7 +105,99 @@ const signal_generator::SignalParametersT kSignalParameters2 = {
 static volatile bool running = true;
 static void sig_handler(int sig) { running = false; }
 
-int main() {
+/* NIRA STUFF */
+enum PROTOCOL {
+    UNDEFINED,
+    TCP,
+    UDP
+};
+
+struct RunArguments {
+    enum PROTOCOL protocol;
+    uint16_t port;
+    char xcp_file[1024];
+};
+
+static bool parse_args(int argc, char *argv[], struct RunArguments* parsed_args) {
+    int opt;
+    int port = -1;
+
+    // Define long options
+    static struct option long_options[] = {
+        {"protocol", required_argument, 0, 'p'},
+        {"port",     required_argument, 0, 'P'},
+        {"help",     no_argument,       0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    while ((opt = getopt_long(argc, argv, "p:P:f:h", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 'p': {
+                if (strcasecmp(optarg, "TCP") == 0)
+                {
+                    parsed_args->protocol = TCP;
+                }
+                else if (strcasecmp(optarg, "UDP") == 0) {
+                    parsed_args->protocol = UDP;
+                } else {
+                    fprintf(stderr, "Error: protocol must be TCP or UDP\n");
+                    return false;
+                }
+                break;
+            }
+
+            case 'P': {
+                port = atoi(optarg);
+                if (port <= 0 || port > 65535) {
+                    fprintf(stderr, "Error: port must be a valid integer between 1 and 65535\n");
+                    return false;
+                }
+                parsed_args->port = port;
+                break;
+            }
+
+            case 'f': {
+                strncpy(parsed_args->xcp_file, optarg, sizeof(parsed_args->xcp_file) - 1);
+                break;
+            }
+
+            case 'h':
+            default:
+                printf("Usage: %s --protocol TCP|UDP --port <number> --file <path_to_xcp_data_file>\n", argv[0]);
+                return false;
+        }
+    }
+
+    // Validate required arguments
+    if (parsed_args->protocol == UNDEFINED) {
+        fprintf(stderr, "Error: protocol is required\n");
+        return false;
+    }
+
+    if (port == -1) {
+        fprintf(stderr, "Error: port is required\n");
+        return false;
+    }
+
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    struct RunArguments run_args;
+    if (!parse_args(argc, argv, &run_args))
+    {
+        return 1;
+    }
+
+    const bool datalog_provided = run_args.xcp_file[0] != '\0';
+    std::ifstream stream;
+    if (datalog_provided)
+    {
+        // Initialize for reading
+        stream.open(run_args.xcp_file);
+        // Move to start
+        stream.seekg(28+140*400);
+    }
 
     std::cout << "\nXCP on Ethernet cpp_demo C++ xcplib demo\n" << std::endl;
     signal(SIGINT, sig_handler);
@@ -99,14 +212,14 @@ int main() {
 
     // Initialize the XCP Server
     uint8_t addr[4] = OPTION_SERVER_ADDR;
-    if (!XcpEthServerInit(addr, OPTION_SERVER_PORT, OPTION_USE_TCP, OPTION_QUEUE_SIZE)) {
+    if (!XcpEthServerInit(addr, run_args.port, run_args.protocol == TCP, OPTION_QUEUE_SIZE)) {
         std::cerr << "Failed to initialize XCP server" << std::endl;
         return 1;
     }
 
     // Enable A2L generation
     // Set mode to write once to create stable A2L files, this also enables calibration segment persistence and freeze support
-    if (!A2lInit(addr, OPTION_SERVER_PORT, OPTION_USE_TCP, A2L_MODE_WRITE_ONCE | A2L_MODE_FINALIZE_ON_CONNECT | A2L_MODE_AUTO_GROUPS)) {
+    if (!A2lInit(addr, run_args.port, run_args.protocol == TCP, A2L_MODE_WRITE_ONCE | A2L_MODE_FINALIZE_ON_CONNECT | A2L_MODE_AUTO_GROUPS)) {
         std::cerr << "Failed to initialize A2L generator" << std::endl;
         return 1;
     }
@@ -141,6 +254,25 @@ int main() {
     A2lCreateLinearConversion(temperature, "Temperature in °C from unsigned byte", "°C", 1.0, -50.0);
     A2lCreatePhysMeasurement(temperature, "Motor temperature in °C", "conv.temperature", -50.0, 200.0);
     A2lCreatePhysMeasurement(speed, "Speed in km/h", "km/h", 0, 250.0);
+
+    // Register NIRA variables
+    A2lCreatePhysMeasurement(AxleHeightRear, "Axle height on rear axle", A2lCreateLinearConversion(AxleHeightRear, "Conversion for axle height", "mm", 0.5, 0.0), 0.0, 0.0);
+    A2lCreateMeasurement(SuspensionOperationMode, "Suspension ");
+    A2lCreatePhysMeasurement(LatAcc, "Longitudinal acceleration", A2lCreateLinearConversion(LatAcc, "Conversion for lateral acceleration", "m/s2", 1.0/128.0, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(LonAcc, "Longitudinal acceleration", A2lCreateLinearConversion(LonAcc, "Conversion for longitudinal acceleration", "m/s2", 1.0/128.0, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(Velocity, "Vehicle velocity", A2lCreateLinearConversion(Velocity, "Conversion for velocity", "m/s", 1.0/128.0, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(Odometer, "Odometer", A2lCreateLinearConversion(Odometer, "Conversion for odometer", "m", 1000.0, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(GpsTime, "GNSS Time", A2lCreateLinearConversion(GpsTime, "Conversion GPSTime", "s", 0.5, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(AmbientTemperature, "Outside air temperature", "degC", 0.0, 0.0);
+    A2lCreatePhysMeasurement(EngineTorque, "Engine torque", "Nm", 0.0, 0.0);
+    A2lCreateMeasurement(BrakingInProgress, "Braking in progress flag");
+
+    for (int i = 0; i < sizeof(datalog)/sizeof(datalog[0]); i++)
+    {
+        char buf[20];
+        sprintf(buf, "datalog_%d", i);
+        A2lCreateMeasurementInstance(buf, datalog[i], "Datalog array");
+    }
 
     // Register the local measurement variables 'loop_counter', 'loop_time', 'loop_cycletime', 'loop_histogram' and 'sum'
     A2lSetStackAddrMode(mainloop);
@@ -197,6 +329,24 @@ int main() {
         speed += (250.0f - speed) * 0.0001;
         if (speed > 245.0f)
             speed = 0; // Reset speed to 0 km/h
+
+        
+        if (datalog_provided)
+        {
+            if (XcpIsDaqRunning())
+            {
+                // Update the data array until file is exhausted
+                if (!stream.eof())
+                {
+                    stream.read(reinterpret_cast<char*>(&datalog[0]), 400);
+                }
+            }
+            else if (stream.tellg() != (28+140*400))
+            {
+                // Reset when not logging
+                stream.seekg(28+140*400);
+            }
+        }
 
         // Trigger the XCP measurement mainloop for temperature, speed, loop_counter and sum
         DaqTriggerEvent(mainloop);
