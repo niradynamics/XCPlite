@@ -59,13 +59,14 @@ static double AmbientTemperature = 20.0;
 static float EngineTorque = 1250.0;
 static bool BrakingInProgress = true;
 
-static uint32_t datalog[100];
+static uint32_t ls_NdSwcDebugDataStream[100];
 
 //-----------------------------------------------------------------------------------------------------
 // Demo signal generator class
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double k2Pi = (kPi * 2);
+constexpr uint32_t kMainloop20MsEventPeriodNs = 20 * 1000 * 1000;
 
 // Default parameter values for multiple instances
 const signal_generator::SignalParametersT kSignalParameters1 = {
@@ -245,34 +246,10 @@ int main(int argc, char* argv[]) {
     uint32_t loop_histogram[kHistogramSize];
     memset(loop_histogram, 0, sizeof(loop_histogram));
     double sum = 0, channel1 = 0, channel2 = 0;
+    tXcpEventId mainloop20ms_event = XCP_UNDEFINED_EVENT_ID;
 
     // Create a measurement event 'mainloop'
     DaqCreateEvent(mainloop);
-
-    // Register the global measurement variables 'temperature' and 'speed'
-    A2lSetAbsoluteAddrMode(mainloop);
-    A2lCreateLinearConversion(temperature, "Temperature in °C from unsigned byte", "°C", 1.0, -50.0);
-    A2lCreatePhysMeasurement(temperature, "Motor temperature in °C", "conv.temperature", -50.0, 200.0);
-    A2lCreatePhysMeasurement(speed, "Speed in km/h", "km/h", 0, 250.0);
-
-    // Register NIRA variables
-    A2lCreatePhysMeasurement(AxleHeightRear, "Axle height on rear axle", A2lCreateLinearConversion(AxleHeightRear, "Conversion for axle height", "mm", 0.5, 0.0), 0.0, 0.0);
-    A2lCreateMeasurement(SuspensionOperationMode, "Suspension ");
-    A2lCreatePhysMeasurement(LatAcc, "Longitudinal acceleration", A2lCreateLinearConversion(LatAcc, "Conversion for lateral acceleration", "m/s2", 1.0/128.0, 0.0), 0.0, 0.0);
-    A2lCreatePhysMeasurement(LonAcc, "Longitudinal acceleration", A2lCreateLinearConversion(LonAcc, "Conversion for longitudinal acceleration", "m/s2", 1.0/128.0, 0.0), 0.0, 0.0);
-    A2lCreatePhysMeasurement(Velocity, "Vehicle velocity", A2lCreateLinearConversion(Velocity, "Conversion for velocity", "m/s", 1.0/128.0, 0.0), 0.0, 0.0);
-    A2lCreatePhysMeasurement(Odometer, "Odometer", A2lCreateLinearConversion(Odometer, "Conversion for odometer", "m", 1000.0, 0.0), 0.0, 0.0);
-    A2lCreatePhysMeasurement(GpsTime, "GNSS Time", A2lCreateLinearConversion(GpsTime, "Conversion GPSTime", "s", 0.5, 0.0), 0.0, 0.0);
-    A2lCreatePhysMeasurement(AmbientTemperature, "Outside air temperature", "degC", 0.0, 0.0);
-    A2lCreatePhysMeasurement(EngineTorque, "Engine torque", "Nm", 0.0, 0.0);
-    A2lCreateMeasurement(BrakingInProgress, "Braking in progress flag");
-
-    for (int i = 0; i < sizeof(datalog)/sizeof(datalog[0]); i++)
-    {
-        char buf[20];
-        sprintf(buf, "datalog_%d", i);
-        A2lCreateMeasurementInstance(buf, datalog[i], "Datalog array");
-    }
 
     // Register the local measurement variables 'loop_counter', 'loop_time', 'loop_cycletime', 'loop_histogram' and 'sum'
     A2lSetStackAddrMode(mainloop);
@@ -290,6 +267,43 @@ int main(int argc, char* argv[]) {
     // Otherwise use A2lLock() and A2lUnlock() to avoid race conditions when registering measurements, the A2L generator macros for are not thread safe by itself
     signal_generator::SignalGenerator signal_generator_1("SigGen1", &kSignalParameters1);
     signal_generator::SignalGenerator signal_generator_2("SigGen2", &kSignalParameters2);
+
+    // Wait until both worker-thread events exist so the new event is created after them and gets event id 4.
+    while (XcpFindEvent("SigGen1", NULL) == XCP_UNDEFINED_EVENT_ID || XcpFindEvent("SigGen2", NULL) == XCP_UNDEFINED_EVENT_ID) {
+        sleepUs(1000);
+    }
+
+    // Create a dedicated 20 ms event after async, mainloop, SigGen1, and SigGen2.
+    mainloop20ms_event = XcpCreateEvent("mainloop20ms", kMainloop20MsEventPeriodNs, 0);
+
+    // Register the absolute-addressed measurements on the dedicated 20 ms event.
+    A2lLock();
+    A2lSetAbsoluteAddrMode_i(mainloop20ms_event);
+    A2lCreateLinearConversion(temperature, "Temperature in °C from unsigned byte", "°C", 1.0, -50.0);
+    A2lCreatePhysMeasurement(temperature, "Motor temperature in °C", "conv.temperature", -50.0, 200.0);
+    A2lCreatePhysMeasurement(speed, "Speed in km/h", "km/h", 0, 250.0);
+    A2lCreatePhysMeasurement(AxleHeightRear, "Axle height on rear axle", A2lCreateLinearConversion(AxleHeightRear, "Conversion for axle height", "mm", 0.5, 0.0), 0.0, 0.0);
+    A2lCreateMeasurement(SuspensionOperationMode, "Suspension ");
+    A2lCreatePhysMeasurement(LatAcc, "Longitudinal acceleration", A2lCreateLinearConversion(LatAcc, "Conversion for lateral acceleration", "m/s2", 1.0 / 128.0, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(LonAcc, "Longitudinal acceleration", A2lCreateLinearConversion(LonAcc, "Conversion for longitudinal acceleration", "m/s2", 1.0 / 128.0, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(Velocity, "Vehicle velocity", A2lCreateLinearConversion(Velocity, "Conversion for velocity", "m/s", 1.0 / 128.0, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(Odometer, "Odometer", A2lCreateLinearConversion(Odometer, "Conversion for odometer", "m", 1000.0, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(GpsTime, "GNSS Time", A2lCreateLinearConversion(GpsTime, "Conversion GPSTime", "s", 0.5, 0.0), 0.0, 0.0);
+    A2lCreatePhysMeasurement(AmbientTemperature, "Outside air temperature", "degC", 0.0, 0.0);
+    A2lCreatePhysMeasurement(EngineTorque, "Engine torque", "Nm", 0.0, 0.0);
+    A2lCreateMeasurement(BrakingInProgress, "Braking in progress flag");
+    for (int i = 0; i < sizeof(ls_NdSwcDebugDataStream) / sizeof(ls_NdSwcDebugDataStream[0]); i++) {
+        // Build the exact A2L symbol name expected by the toolchain for each stream slot.
+        char buf[64];
+        char comment[80];
+        sprintf(buf, "ls_NdSwcDebugDataStream_%02d", i);
+        sprintf(comment, "NdSwcXcpVars.ls_NdSwcDebugDataStream.%02d", i);
+
+        // Register the measurement with the custom symbol name instead of the default instance.member format.
+        A2lCreateMeasurement_(NULL, buf, A2lGetTypeId(ls_NdSwcDebugDataStream[i]), A2lGetAddr_((uint8_t *)&ls_NdSwcDebugDataStream[i]), A2lGetAddrExt_(), NULL, 0.0, 0.0,
+                              comment);
+    }
+    A2lUnlock();
 
     sleepUs(100000);
     A2lFinalize(); // @@@@ TEST: Manually finalize the A2L file to make it visible without XCP tool connect
@@ -338,7 +352,7 @@ int main(int argc, char* argv[]) {
                 // Update the data array until file is exhausted
                 if (!stream.eof())
                 {
-                    stream.read(reinterpret_cast<char*>(&datalog[0]), 400);
+                    stream.read(reinterpret_cast<char*>(&ls_NdSwcDebugDataStream[0]), 400);
                 }
             }
             else if (stream.tellg() != (28+140*400))
@@ -350,6 +364,10 @@ int main(int argc, char* argv[]) {
 
         // Trigger the XCP measurement mainloop for temperature, speed, loop_counter and sum
         DaqTriggerEvent(mainloop);
+        // Trigger the 20 ms event together with the mainloop event on each loop iteration.
+        if (mainloop20ms_event != XCP_UNDEFINED_EVENT_ID) {
+            DaqTriggerEvent_i(mainloop20ms_event);
+        }
 
         sleepUs(calseg.lock()->delay_us);
     } // while (running)
